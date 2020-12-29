@@ -15,7 +15,7 @@ classdef TemporalCouplingNoPotentials
             obj.gamma_nominal = params.gamma_nominal;
         end
       
-        function [tau_dot_val,sat_flag] = tau_dot(obj,dmp,dt)
+        function tau_dot_val = tau_dot(obj,dmp,dt)
             % DMP prediction step
             dmp_next = dmp.step(0,dt);
             
