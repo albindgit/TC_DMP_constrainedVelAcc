@@ -1,0 +1,244 @@
+#!/usr/bin/env python
+
+import rospy
+import numpy as np
+from robot_ctrl.clik import Clik
+from robot_ctrl.msg import CtrlTarget
+from sensor_msgs.msg import JointState
+from geometry_msgs.msg import PoseStamped, Point, Quaternion
+from std_msgs.msg import Empty
+import kdl_parser_py.urdf
+
+
+class ClikNode:
+    """
+            A class representation of a ROS node for a Closed-Loop Inverse Kinematics controller.
+
+            Implements a ROS node for Closed-Loop Inverse Kinematics control of a robot and send joint velocity
+            commands to {ns}/robot_interface/joint_vel_command, where {ns} is namespace of the node.
+            If orientation control is active, both cartesian position and quaternion of the end-effector is controlled.
+            Otherwise, only cartesian position of the end-effector is controlled.
+            Both a pure position feedback control, velocity control or a combination of the two can be used depending
+            on the target state. The target state is defined through the ROS topic {ns}/robot_ctrl/command which has
+            form "position: [cartesian quaternion], velocity: [cartesian, angular]". Quaternion has order (w,x,y,z).
+
+            Example usage of setting target states from terminal when ClikNode is running
+            ----------
+            Setting a constant position setpoint when orientation control is not active:
+            rostopic pub {ns}/robot_ctrl/command robot_ctrl/CtrlTarget "position: [0.5, -0.5, 1.0]" -r 10
+
+            Setting a constant velocity setpoint when orientation control is active:
+            rostopic pub {ns}/robot_ctrl/command robot_ctrl/CtrlTarget "velocity: [0.1, 0, 0, 0, 0, 0]" -r 10
+
+            ROS Parameters
+            ----------
+            {ns}/robot_ctrl/update_rate : int
+                Update rate of the controller
+            {ns}/robot_description : int
+                URDF description of robot
+            {ns}/robot_ctrl/base_link : str
+                Name of base link in kinematic chain of robot in URDF description
+            {ns}/robot_ctrl/ee_link : str
+                Name of end-effector link in kinematic chain of robot in URDF description
+            {ns}/robot_ctrl/orientation_ctrl : bool
+                Setting if only cartesian position is controlled (False) or if orientation is also controlled (True)
+            {ns}/robot_ctrl/kp : float
+                Position feedback gain of the closed-loop controller [optional: default is 0]
+            {ns}/robot_ctrl/ee_vel_max : float or list of floats
+                Maximum velocity of end-effector  [optional: default is infinity]
+            {ns}/robot_ctrl/q_vel_max : float or list of floats
+                Maximum velocity of robot joints  [optional: default is infinity]
+
+            Attributes
+            ----------
+            ctrl : Clik
+                Clik object
+            rate : int
+                Update rate of the node
+            max_msg_deadtime : float
+                Threshold (in seconds) of how old target and robot messages can be in order to update controller
+            joint_stamp : rospy.Time
+                Time stamp of last received robot state message
+            robot_joint_positions: list
+                List of robot joint positions
+            target_stamp : rospy.Time
+                Time stamp of last received target state message
+            target_state: dict
+                Dictionary with keys "position" and "velocity", both describing target state in operational space
+
+            Methods
+            -------
+            says(sound=None)
+                Prints the animals name and what sound it makes
+            """
+    def __init__(self):
+        self.ctrl = None
+        self.rate = None
+        self.max_msg_deadtime = 0.1
+        self.joint_stamp = None
+        self.robot_joint_positions = []
+        self.target_stamp = None
+        self.target_state = {"position": [], "velocity": []}
+
+        # Load parameters
+        if not self.load_params(0):
+            exit(1)
+
+        # Define ROS publishers and subscribers
+        self.vel_cmd_publisher = rospy.Publisher("robot_interface/vel_command", CtrlTarget, queue_size=1)
+        self.ee_pose_publisher = rospy.Publisher("robot_ctrl/ee_pose", PoseStamped, queue_size=1)
+        rospy.Subscriber("robot_interface/joint_states", JointState, self.state_update)
+        rospy.Subscriber("robot_ctrl/command", CtrlTarget, self.target_update)
+        rospy.Subscriber("robot_ctrl/load_params", Empty, self.load_params)
+
+        # Go into spin
+        self.spin()
+
+    def load_params(self, data):
+        """Loads control parameters from ROS parameter server.
+
+        Parameters
+        ----------
+        data : str
+            Dummy string, not used.
+
+        Returns
+        -------
+        bool
+            Returns True if all mandatory parameters were available at the ROS parameter server.
+            Returns False otherwise.
+        """
+        # Get update rate
+        if not rospy.has_param('robot_ctrl/update_rate'):
+            rospy.logerr("Parameter " + rospy.get_namespace() + "robot_ctrl/update_rate not set.")
+            return False
+        self.rate = rospy.Rate(rospy.get_param('robot_ctrl/update_rate'))
+        # Get base and end-effector link names in robot_description
+        if not rospy.has_param('robot_description'):
+            rospy.logerr("Parameter " + rospy.get_namespace() + "robot_description not set.")
+            return False
+        if not rospy.has_param('robot_ctrl/base_link'):
+            rospy.logerr("Parameter " + rospy.get_namespace() + "robot_ctrl/base_link not set.")
+            return False
+        if not rospy.has_param('robot_ctrl/ee_link'):
+            rospy.logerr("Parameter " + rospy.get_namespace() + "robot_ctrl/ee_link not set.")
+            return False
+        base_link = rospy.get_param('robot_ctrl/base_link')
+        ee_link = rospy.get_param('robot_ctrl/ee_link')
+        (ok, kdl_tree) = kdl_parser_py.urdf.treeFromParam("robot_description")
+        kdl_chain = kdl_tree.getChain(base_link, ee_link)
+        # Get control gains
+        if not rospy.has_param('robot_ctrl/orientation_ctrl'):
+            rospy.logerr("Parameter " + rospy.get_namespace() + "robot_ctrl/orientation_ctrl not set.")
+            return False
+        orientation_ctrl = rospy.get_param('robot_ctrl/orientation_ctrl')
+        if not rospy.has_param('robot_ctrl/kp_pos'):
+            rospy.logerr("Parameter " + rospy.get_namespace() + "robot_ctrl/kp_pos not set.")
+            return False
+        kp_pos = rospy.get_param('robot_ctrl/kp_pos')
+        if orientation_ctrl:
+            if not rospy.has_param('robot_ctrl/kp_or'):
+                rospy.logerr("Parameter " + rospy.get_namespace() + "robot_ctrl/kp_or not set.")
+                return False
+            kp_or = rospy.get_param('robot_ctrl/kp_or')
+        else:
+            kp_or = 0
+        # Get velocity limits
+        if not rospy.has_param('robot_ctrl/ee_vel_max'):
+            rospy.logerr("Parameter " + rospy.get_namespace() + "robot_ctrl/ee_vel_max not set.")
+            return False
+        ee_vel_max = rospy.get_param('robot_ctrl/ee_vel_max')
+        if not rospy.has_param('robot_ctrl/q_vel_max'):
+            rospy.logerr("Parameter " + rospy.get_namespace() + "robot_ctrl/q_vel_max not set.")
+            return False
+        q_vel_max = rospy.get_param('robot_ctrl/q_vel_max')
+        # Create control object
+        self.ctrl = Clik(kdl_chain, orientation_ctrl, kp_pos, kp_or, ee_vel_max, q_vel_max)
+        rospy.loginfo("Loaded robot_ctrl parameters.")
+        return True
+
+    def state_update(self, msg):
+        """Callback for ROS topic {ns}/robot_interface/joint_states to update robot joints.
+
+        Updates robot joint states and publishes end-effector pose with new joint positions.
+
+        Parameters
+        ----------
+        msg : JointState
+            ROS JointState message with position information of the robot.
+        """
+        if self.ctrl and len(msg.position) == self.ctrl.n:
+            # Update joint state
+            self.robot_joint_positions = msg.position
+            self.joint_stamp = msg.header.stamp
+
+            # Publish ee pose
+            [ee_position, ee_orientation] = self.ctrl.forward_kinematics(self.robot_joint_positions)
+            quat = Quaternion()
+            quat.w = ee_orientation[0]
+            quat.x = ee_orientation[1]
+            quat.y = ee_orientation[2]
+            quat.z = ee_orientation[3]
+            pos = Point()
+            pos.x = ee_position[0]
+            pos.y = ee_position[1]
+            pos.z = ee_position[2]
+            pose_msg = PoseStamped()
+            pose_msg.header.stamp = self.joint_stamp
+            pose_msg.pose.position = pos
+            pose_msg.pose.orientation = quat
+            self.ee_pose_publisher.publish(pose_msg)
+
+    def target_update(self, msg):
+        """Callback for ROS topic {ns}/robot_ctrl/command to update target states.
+
+        Parameters
+        ----------
+        msg : CtrlTarget
+            ROS CtrlTarget message with position and/or velocity information of the target.
+        """
+        if self.ctrl:
+            dim_pos = 7 if self.ctrl.o_ctrl else 3
+            dim_vel = 6 if self.ctrl.o_ctrl else 3
+            if len(msg.position) != dim_pos:
+                msg.position = []
+            if len(msg.velocity) != dim_vel:
+                msg.velocity = []
+            self.target_state["position"] = msg.position
+            self.target_state["velocity"] = msg.velocity
+            self.target_stamp = rospy.Time.now()
+
+    def spin(self):
+        """Computes and publishes joint velocity commands at each control iteration."""
+        while (not rospy.is_shutdown()):
+            # Check target and robot state to be recent enough
+            if self.target_stamp and self.joint_stamp:
+                target_msg_deadtime = (rospy.Time.now() - self.target_stamp).to_sec()
+                robot_msg_deadtime = (rospy.Time.now() - self.joint_stamp).to_sec()
+                if robot_msg_deadtime < self.max_msg_deadtime and target_msg_deadtime < self.max_msg_deadtime:
+                    # Compute velocity command
+                    vel_cmd = self.ctrl.compute_ctrl(self.target_state, self.robot_joint_positions)
+
+                    # Publish velocity command
+                    cmd_msg = CtrlTarget()
+                    cmd_msg.header.stamp = rospy.Time.now()
+                    cmd_msg.header.frame_id = ''
+                    cmd_msg.acceleration = []
+                    cmd_msg.velocity = vel_cmd
+                    cmd_msg.position = []
+                    self.vel_cmd_publisher.publish(cmd_msg)
+
+            self.rate.sleep()
+
+
+# Here is the main entry point
+if __name__ == '__main__':
+    try:
+        # Init the node
+        rospy.init_node('ClikNode')
+
+        # Initializing and continue running the main class
+        ClikNode()
+
+    except rospy.ROSInterruptException:
+        pass

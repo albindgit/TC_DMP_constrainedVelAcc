@@ -1,0 +1,18 @@
+<launch>
+
+<!-- Controller parameters -->
+<arg name="ns"/>
+<arg name="update_rate"/>
+<arg name="kp"/>
+
+<group ns="$(arg ns)">
+
+    <param name="robot_ctrl/update_rate" value="$(arg update_rate)"/>
+    <param name="robot_ctrl/kp" value="$(arg kp)"/>
+
+    <!-- Launch joint velocity controller -->
+    <node name="ctrl_node" pkg="robot_ctrl" type="vel_ff_pos_fb_node" output="screen"/>
+
+</group>
+
+</launch>

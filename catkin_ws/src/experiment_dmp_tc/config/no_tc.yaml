@@ -1,0 +1,15 @@
+robot_interface:
+  update_rate: 125
+  init_pos: [-2.0859,-2.0857,-1.8438,0.78783,2.0859,0]
+  acc_max: deg(100)
+
+robot_ctrl:
+  kp: 2.0
+  update_rate: 125
+  vel_max: [deg(30), deg(30), deg(30), deg(30), deg(30), deg(30)]
+
+motion_planning:
+  update_rate: 125
+  tau0: 5
+  tc:
+    type: 0

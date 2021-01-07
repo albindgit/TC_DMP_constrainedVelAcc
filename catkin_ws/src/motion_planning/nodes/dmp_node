@@ -1,0 +1,140 @@
+#!/usr/bin/env python
+
+from motion_planning.dmp import DMP, TCVelAccConstrained, NoTC
+import numpy as np
+import rospy
+from robot_ctrl.msg import CtrlTarget
+from std_msgs.msg import Float64, String
+from motion_planning.msg import DMPState
+
+
+class DMPNode:
+    def __init__(self):
+        self.dmp_active = False
+        self.rate = None
+        self.dt = None
+        self.dmp = DMP()
+        self.tc = None
+
+        # Load target trajectory and fit DMP
+        self.load_trajectory()
+
+        # Load parameters from server
+        self.load_params()
+
+        # Setup ros topics
+        self.target_pub = rospy.Publisher("robot_ctrl/command", CtrlTarget, queue_size=1)
+        self.dmp_state = rospy.Publisher("motion_planning/dmp_state", DMPState, queue_size=1)
+        rospy.Subscriber("motion_planning/command", String, self.command_parser)
+
+        # Go into spin
+        self.spin()
+
+    def load_trajectory(self):
+        if rospy.has_param('motion_planning/trajectory_loadpath'):
+            # Set demo trajectory
+            trajectory_loadpath = rospy.get_param('motion_planning/trajectory_loadpath')
+            data = np.genfromtxt(trajectory_loadpath, delimiter=',')
+            t_demo = data[:, 0]
+            path_demo = np.array(data[:, 1:]).T
+            self.dmp.fit(path_demo, t_demo)
+            rospy.set_param("motion_planning/init_pos", np.squeeze(self.dmp.y0).tolist())
+        else:
+            rospy.logerr("Could not load trajectory. Parameter " + rospy.get_namespace() +
+                         "motion_planning/trajectory_loadpath not found")
+
+    def load_params(self):
+        # Load parameters from server
+        update_rate = rospy.get_param('motion_planning/update_rate', 125)
+        tc_type = rospy.get_param('motion_planning/tc/type', 0)
+        if rospy.has_param('motion_planning/tau0'):
+            self.dmp.tau0 = rospy.get_param('motion_planning/tau0')
+
+        # Set temporal coupling
+        if tc_type == 0:
+            self.tc = NoTC()
+        elif tc_type == 1:
+            gamma_nominal = rospy.get_param('motion_planning/tc/gamma_nominal', 1)
+            gamma_a = rospy.get_param('motion_planning/tc/gamma_a', 0.5)
+            v_max = np.array(rospy.get_param('motion_planning/tc/v_max', np.inf))
+            a_max = np.array(rospy.get_param('motion_planning/tc/a_max', np.inf))
+            eps = np.array(rospy.get_param('motion_planning/tc/eps', 0.001))
+            self.tc = TCVelAccConstrained(gamma_nominal, gamma_a, v_max, a_max, eps)
+        # Set rate for ros spin
+        self.rate = rospy.Rate(update_rate)
+        self.dt = 1.0 / update_rate
+
+    def command_parser(self, msg):
+        if msg.data == 'start':
+            self.dmp_active = True
+        elif msg.data == 'stop':
+            self.dmp_active = False
+        elif msg.data == 'reset':
+            self.dmp.reset()
+            self.dmp_active = False
+            rospy.loginfo("Reset motion_planner.")
+        elif msg.data == 'step':
+            self.dmp.step(self.dt)
+        elif msg.data == 'load_params':
+            self.load_params()
+            rospy.loginfo("Reloaded motion_planner parameters.")
+        elif msg.data == 'load_trajectory':
+            self.load_trajectory()
+            rospy.loginfo("Reloaded motion_planner trajectory.")
+        else:
+            rospy.loginfo("Invalid command string for motion planner.")
+
+    # spin -----------------------------------------------------
+    # -----------------------------------------------------------
+    def spin(self):
+        print_flag = True
+        while (not rospy.is_shutdown()):
+
+            if self.dmp_active:
+                # Step DMP
+                self.dmp.step(self.dt)
+                # Step temporal coupling
+                tau = self.dmp.tau + self.tc.update(self.dmp, self.dt) * self.dt
+                self.dmp.set_tau(tau)
+                # Send target trajectory state command
+                pub_msg = CtrlTarget()
+                pub_msg.header.stamp = rospy.Time.now()
+                pub_msg.acceleration = self.dmp.acc
+                pub_msg.velocity = self.dmp.vel
+                pub_msg.position = self.dmp.pos
+                self.target_pub.publish(pub_msg)
+            else:
+                print_flag = True
+
+            # Publish DMP state command
+            pub_msg = DMPState()
+            pub_msg.header.stamp = rospy.Time.now()
+            pub_msg.acceleration = self.dmp.acc
+            pub_msg.velocity = self.dmp.vel
+            pub_msg.position = self.dmp.pos
+            pub_msg.theta = self.dmp.theta
+            pub_msg.s = self.dmp.s()
+            pub_msg.tau = self.dmp.tau
+            self.dmp_state.publish(pub_msg)
+
+            # Notify when DMP trajectory is finished
+            if print_flag and self.dmp.theta > 1:
+                rospy.loginfo("DMP trajectory finished.")
+                print_flag = False
+
+            # Sleep
+            self.rate.sleep()
+
+
+# --------------------------------------------------------------------
+# Here is the main entry point
+if __name__ == '__main__':
+    try:
+        # Init the node:
+        rospy.init_node('DMPNode')
+
+        # Initializing and continue running the main class:
+        DMPNode()
+
+    except rospy.ROSInterruptException:
+        pass

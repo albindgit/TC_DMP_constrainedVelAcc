@@ -1,0 +1,25 @@
+<launch>
+
+    <arg name="ns" default="UR10"/>
+    <arg name="trajectory_file" default="ur10_omega_trajectory.csv" />
+    <arg name="calibration_file" default="ur10_calibration.csv" />
+    <arg name="param_file" default="no_tc.yaml" />
+    <arg name="bag_name" default=""/>
+
+
+    <node pkg="rosbag" type="record" args="/UR10/robot_interface/joint_states /UR10/motion_planning/dmp_state
+    /UR10/robot_interface/joint_vel_command /UR10/experiment_step -O '$(find experiment_dmp_tc)/bagfiles/$(arg bag_name).bag'"
+     name="rosbag_record" unless="$(eval bag_name == '')"/>
+
+    <group ns="$(arg ns)">
+        <!-- Set parameters to parameter server -->
+        <rosparam command="load" file="$(find experiment_dmp_tc)/config/$(arg param_file)" />
+        <param name="motion_planning/trajectory_loadpath" value="$(find experiment_dmp_tc)/config/$(arg trajectory_file)" />
+        <param name="calibration_loadpath" value="$(find experiment_dmp_tc)/config/$(arg calibration_file)" />
+
+        <!-- Move robot to init pos -->
+        <node pkg="experiment_dmp_tc" type="calibration_experiment.py" name="experiment_node" output="screen"/>
+
+    </group>
+
+</launch>

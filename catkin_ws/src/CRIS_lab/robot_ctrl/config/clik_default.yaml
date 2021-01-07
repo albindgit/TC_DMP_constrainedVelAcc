@@ -1,0 +1,9 @@
+robot_ctrl:
+  update_rate: 125
+  base_link: 'base_link'
+  ee_link: 'ee_link'
+  kp_pos: 1
+  kp_or: 0.5
+  orientation_ctrl: true
+  ee_vel_max: [0.1,0.1,0.1]
+  q_vel_max: []

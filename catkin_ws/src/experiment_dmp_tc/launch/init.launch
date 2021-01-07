@@ -1,0 +1,21 @@
+<launch>
+
+    <arg name="ns" default="UR10"/>
+    <arg name="param_file" default="no_tc.yaml" />
+    <arg name="trajectory_file" default="ur10_omega_trajectory.csv" />
+
+
+<group ns="$(arg ns)">
+    <!-- Set parameters to parameter server -->
+    <rosparam command="load" file="$(find experiment_dmp_tc)/config/$(arg param_file)" />
+    <param name="motion_planning/trajectory_loadpath" value="$(find experiment_dmp_tc)/config/$(arg trajectory_file)" />
+
+    <node pkg="rostopic" type="rostopic" name="pub_reload_params" args="pub /UR10/robot_ctrl/reloadParams std_msgs/Empty -1"/>
+
+
+    <!-- Move robot to init pos -->
+    <node pkg="experiment_dmp_tc" type="initialize.py" name="initialize_node" output="screen"/>
+
+</group>
+
+</launch>

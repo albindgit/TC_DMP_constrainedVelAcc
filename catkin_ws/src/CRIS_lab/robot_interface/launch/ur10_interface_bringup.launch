@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+
+<launch>
+
+<arg name="ns" default="UR10" />
+<arg name="mode" default="integrator" />
+<arg name="joint_ctrl" default="true" />
+<arg name="robot_ip" default="localhost"/>
+<arg name="calibration_file"  default="" />
+<arg name="rviz" default="true"/>
+<arg name="rvizconfig" default="$(find robot_interface)/rviz/ur10.rviz" />
+<arg name="param_file"  default="" />
+
+
+    <group ns="$(arg ns)">
+
+        <!-- Launch ur driver if in urscript mode -->
+        <group if="$(eval mode == 'urscript')">
+            <include file="$(find ur_robot_driver)/launch/ur10_bringup.launch">
+                <arg name="robot_ip" value="$(arg robot_ip)" />
+                <arg name="kinematics_config" value="$(arg calibration_file)" unless="$(eval calibration_file == '')"/>
+            </include>
+        </group>
+
+        <!-- Load robot robot description if in integrator mode -->
+        <group if="$(eval mode == 'integrator')">
+            <param name="robot_description" command="$(find xacro)/xacro '$(find ur_description)/urdf/ur10_joint_limited_robot.urdf.xacro'" />
+            <node pkg="robot_state_publisher" type="robot_state_publisher" name="state_publisher">
+                <remap from="joint_states" to="robot_interface/joint_states" />
+            </node>
+        </group>
+
+        <!-- Load parameters to server from yaml file -->
+        <rosparam command="load" file="$(find robot_interface)/config/ur10_default_jctrl_params.yaml" if="$(eval arg('joint_ctrl') and param_file == '')"/>
+        <rosparam command="load" file="$(find robot_interface)/config/ur10_default_eectrl_params.yaml" if="$(eval not arg('joint_ctrl') and param_file == '')"/>
+        <rosparam command="load" file="$(arg param_file)" unless="$(eval param_file == '')"/>
+        <param name="robot_interface/mode" value="$(arg mode)"/>
+        <param name="robot_interface/joint_ctrl" value="$(arg joint_ctrl)"/>
+
+        <!-- Start interface node -->
+        <node name="UR10InterfaceNode" pkg="robot_interface" type="ur10_interface_node" output="screen"/>
+
+        <!-- start rviz -->
+        <node name="rviz" pkg="rviz" type="rviz" args="-d $(arg rvizconfig)" if="$(arg rviz)"/>
+    </group>
+
+</launch>
+

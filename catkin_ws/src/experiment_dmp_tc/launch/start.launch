@@ -1,0 +1,12 @@
+<launch>
+
+    <arg name="bag_name" default=""/>
+
+    <node pkg="rosbag" type="record" args="/UR10/robot_interface/joint_states /UR10/motion_planning/dmp_state
+    /UR10/robot_interface/joint_vel_command -O '$(find experiment_dmp_tc)/bagfiles/$(arg bag_name).bag'"
+     name="rosbag_record" unless="$(eval bag_name == '')"/>
+
+    <node pkg="rostopic" type="rostopic" name="pub_start" args="pub /UR10/motion_planning/command std_msgs/String  start -1"/>
+
+
+</launch>

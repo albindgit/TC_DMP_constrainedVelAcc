@@ -1,0 +1,113 @@
+#!/usr/bin/env python
+
+from motion_planning.online_traj_scaling import GMRwOA, TrajectoryGenerator
+import numpy as np
+import rospy
+from robot_ctrl.msg import CtrlTarget
+from std_msgs.msg import Float64, String
+from motion_planning.msg import TrajGenState
+
+
+class TrajGenNode:
+    def __init__(self):
+        self.active = False
+        self.rate = None
+        self.dt = None
+        self.traj_gen = None
+
+        # Load parameters from server
+        if not self.load_params():
+            rospy.logwarn("Trajectory Generator not initialized")
+
+        # Setup ros topics
+        self.target_pub = rospy.Publisher("robot_ctrl/command", CtrlTarget, queue_size=1)
+        self.state_pub = rospy.Publisher("motion_planning/state", TrajGenState, queue_size=1)
+        rospy.Subscriber("motion_planning/command", String, self.command_parser)
+
+        # Go into spin
+        self.spin()
+
+    def load_params(self):
+        parameters = ['x0', 's_end', 'priors', 'mu', 'sigma', 'o_c', 'o_r']
+        if not rospy.has_param('motion_planning/update_rate'):
+            rospy.logerr("Parameter " + rospy.get_namespace() + "motion_planning/update_rate not on parameter server.")
+            return False
+        update_rate = rospy.get_param('motion_planning/update_rate')
+        self.rate = rospy.Rate(update_rate)
+        params = {}
+        for i in range(len(parameters)):
+            if not rospy.has_param('motion_planning/' + parameters[i]):
+                rospy.logerr("Parameter " + rospy.get_namespace() + "motion_planning/" + parameters[i] + " not on parameter server.")
+                return False
+            params[parameters[i]] = rospy.get_param('motion_planning/' + parameters[i])
+        gmr = GMRwOA(params)
+        self.traj_gen = TrajectoryGenerator(gmr)
+        return True
+
+    def command_parser(self, msg):
+        if msg.data == 'start':
+            self.active = True
+        elif msg.data == 'stop':
+            self.active = False
+        elif msg.data == 'reset':
+            self.traj_gen.reset()
+            self.active = False
+            rospy.loginfo("Reset motion_planner.")
+        elif msg.data == 'step':
+            self.traj_gen.step(self.dt)
+        elif msg.data == 'load_params':
+            self.load_params()
+            rospy.loginfo("Reloaded motion_planner parameters.")
+        else:
+            rospy.loginfo("Invalid command string for motion planner.")
+
+    # spin -----------------------------------------------------
+    # -----------------------------------------------------------
+    def spin(self):
+        print_flag = True
+        while not rospy.is_shutdown():
+
+            if self.active:
+                # Step DMP
+                self.traj_gen.step(self.dt)
+                # Send target trajectory state command
+                pub_msg = CtrlTarget()
+                pub_msg.header.stamp = rospy.Time.now()
+                pub_msg.acceleration = self.traj_gen.acc
+                pub_msg.velocity = self.traj_gen.vel
+                pub_msg.position = self.traj_gen.pos
+                self.target_pub.publish(pub_msg)
+            else:
+                print_flag = True
+
+            # Publish DMP state command
+            pub_msg = TrajGenState()
+            pub_msg.header.stamp = rospy.Time.now()
+            pub_msg.acceleration = [0.0032*self.traj_gen.acc[0], 0, 0.0026*self.traj_gen.acc[1]]
+            pub_msg.velocity = [0.0032*self.traj_gen.vel[0], 0, 0.0026*self.traj_gen.vel[1]]
+            pub_msg.position = [0.0032*self.traj_gen.pos[0], 0, 0.0026*self.traj_gen.pos[1]+0.7]
+            pub_msg.s = self.traj_gen.s
+            pub_msg.s_dot = self.traj_gen.ds
+            self.state_pub.publish(pub_msg)
+
+            # Notify when DMP trajectory is finished
+            if print_flag and self.traj_gen.s > self.traj_gen.dyn_sys.s_end:
+                rospy.loginfo("Trajectory finished.")
+                print_flag = False
+
+            # Sleep
+            self.rate.sleep()
+
+
+# --------------------------------------------------------------------
+# Here is the main entry point
+if __name__ == '__main__':
+    try:
+        # Init the node:
+        rospy.init_node('TrajGenNode')
+
+        # Initializing and continue running the main class:
+        TrajGenNode()
+
+    except rospy.ROSInterruptException:
+        pass

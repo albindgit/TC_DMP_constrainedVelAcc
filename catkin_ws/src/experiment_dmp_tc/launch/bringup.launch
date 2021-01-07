@@ -1,0 +1,38 @@
+<launch>
+
+<!-- Arguments -->
+<arg name="ns" value="UR10"/>
+<arg name="mode" default="integrator" />
+<arg name="robot_ip" default="localhost"/>
+<arg name="rviz" default="true"/>
+<arg name="calibration_file"  default="" />
+<arg name="param_file" default="no_tc.yaml" />
+<arg name="trajectory_file" default="ur10_omega_trajectory.csv" />
+
+
+<!-- Launch robot interface -->
+<include file="$(find robot_interface)/launch/ur10_interface_bringup.launch">
+    <arg name="mode" value="$(arg mode)" />
+    <arg name="robot_ip" value="$(arg robot_ip)" />
+    <arg name="rviz" default="$(arg rviz)"/>
+    <arg name="ns" default="$(arg ns)"/>
+    <arg name="calibration_file" default="$(arg calibration_file)"/>
+    <arg name="param_file" default="$(find experiment_dmp_tc)/config/$(arg param_file)"/>
+</include>
+
+
+<group ns="$(arg ns)">
+
+<!-- Load parameters -->
+    <rosparam command="load" file="$(find experiment_dmp_tc)/config/$(arg param_file)" />
+    <param name="motion_planning/trajectory_loadpath" value="$(find experiment_dmp_tc)/config/$(arg trajectory_file)" />
+
+<!-- Launch joint velocity controller -->
+    <node name="ctrl_node" pkg="robot_ctrl" type="vel_ff_pos_fb_node" output="screen"/>
+
+<!-- Launch motion planner -->
+    <node name="motion_planner_node" pkg="motion_planning" type="dmp_node" output="screen"/>
+
+</group>
+
+</launch>

@@ -1,0 +1,13 @@
+<launch>
+
+<!-- Controller parameters -->
+<arg name="use_default_settings" default="true"/>
+
+<!-- Load default parameters if desired -->
+<rosparam command="load" file="$(find robot_ctrl)/config/clik_default.yaml" if="$(arg use_default_settings)" />
+
+<!-- Launch clik controller -->
+<node name="ctrl_node" pkg="robot_ctrl" type="clik_node" output="screen"/>
+
+
+</launch>
